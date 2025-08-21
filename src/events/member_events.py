@@ -55,3 +55,6 @@ def setup_member_events(bot):
             new_nick = after.nick or after.name
             await bot.logger.log(f"📝 **{after.mention} đổi nickname:** `{old_nick}` → `{new_nick}`")
 
+
+
+

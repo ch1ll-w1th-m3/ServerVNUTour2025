@@ -113,3 +113,6 @@ def setup_admin_commands(bot):
         if isinstance(error, commands.MissingPermissions):
             await ctx.send("❌ Bạn không có quyền sử dụng lệnh này!")
 
+
+
+

@@ -9,6 +9,42 @@ from typing import Optional, Deque
 from .track import Track
 
 
+def force_cleanup_ffmpeg_source(source):
+    """Force cleanup FFmpeg audio source and terminate process"""
+    if not source:
+        return
+    
+    try:
+        # Standard cleanup first
+        if hasattr(source, 'cleanup'):
+            source.cleanup()
+        
+        # Force terminate FFmpeg process if still running
+        if hasattr(source, '_process') and source._process:
+            import subprocess
+            import signal
+            import os
+            import time
+            
+            process = source._process
+            if process and process.poll() is None:  # Process still running
+                # Try graceful termination first
+                process.terminate()
+                time.sleep(0.05)
+                
+                # Force kill if still running
+                if process.poll() is None:
+                    if os.name == 'nt':  # Windows
+                        process.kill()
+                    else:  # Unix/Linux
+                        try:
+                            os.kill(process.pid, signal.SIGKILL)
+                        except:
+                            pass
+    except Exception:
+        pass  # Ignore all cleanup errors
+
+
 @dataclass
 class GuildPlayer:
     """Manages music playback for a specific guild"""
@@ -69,6 +105,20 @@ class GuildPlayer:
             info += f"{i}. **{track.title}** - {duration}\n"
         
         return info
+    
+    def update_started_at(self, timestamp: float):
+        """Update the started_at timestamp"""
+        self.started_at = timestamp
+    
+    def get_current_position(self) -> float:
+        """Get current playback position in seconds"""
+        if not self.started_at:
+            return 0.0
+        
+        import time
+        current_time = time.time()
+        position = current_time - self.started_at
+        return max(0.0, position)
 
 
 # Global player storage
@@ -106,21 +156,22 @@ async def ensure_voice(message: discord.Message) -> discord.VoiceClient:
 async def after_play_callback(err: Optional[Exception], player: GuildPlayer):
     """Callback after music playback ends"""
     try:
-        # Cleanup current source
-        if player.current_source:
-            player.current_source.cleanup()
-    except Exception:
-        pass
-    
-    # Log error if any
-    if err:
-        print(f"[PLAYER ERROR] {err}")
-    
-    # Reset current source
-    player.current_source = None
-    
-    # Signal completion
-    try:
-        player.finished.set()
-    except Exception:
-        pass
+        # Ignore certain expected errors
+        if err and "_MissingSentinel" in str(err):
+            # This is a common Discord.py internal error, ignore it
+            pass
+        elif err:
+            print(f"[PLAYER ERROR] {err}")
+        
+        # Cleanup current source safely
+        force_cleanup_ffmpeg_source(player.current_source)
+        
+        # Reset current source
+        player.current_source = None
+        
+        # Signal completion
+        if not player.finished.is_set():
+            player.finished.set()
+            
+    except Exception as e:
+        print(f"[CALLBACK ERROR] {e}")

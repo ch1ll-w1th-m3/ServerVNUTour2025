@@ -75,3 +75,6 @@ async def handle_music_reactions(bot, payload: discord.RawReactionActionEvent, a
         print(f"[REACTION ERROR] {e}")
         await bot.logger.log(f"Lỗi xử lý reaction: {e}")
 
+
+
+

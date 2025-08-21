@@ -3,10 +3,38 @@ Music-related commands
 """
 import discord
 from discord.ext import commands
-from ..music.player import get_player, ensure_voice, after_play_callback
+from ..music.player import get_player, ensure_voice, after_play_callback, force_cleanup_ffmpeg_source
 from ..music.ytdlp_handler import ytdlp_extract, build_ffmpeg_options
 import asyncio
 import threading
+
+
+class VolumeControlledAudioSource(discord.FFmpegPCMAudio):
+    """Custom audio source with volume control"""
+    
+    def __init__(self, source, volume=1.0, **kwargs):
+        super().__init__(source, **kwargs)
+        self._volume = volume
+    
+    @property
+    def volume(self):
+        return self._volume
+    
+    @volume.setter
+    def volume(self, value):
+        self._volume = max(0.0, min(2.0, value))
+    
+    def read(self):
+        """Read audio data with volume applied"""
+        data = super().read()
+        if data and self._volume != 1.0:
+            # Apply volume by scaling the audio data
+            import array
+            audio_array = array.array('h', data)
+            for i in range(len(audio_array)):
+                audio_array[i] = int(audio_array[i] * self._volume)
+            data = audio_array.tobytes()
+        return data
 
 
 def setup_music_commands(bot):
@@ -125,6 +153,9 @@ def setup_music_commands(bot):
             player.clear_queue()
             player.skip_current()
             
+            # Force cleanup any remaining FFmpeg processes
+            force_cleanup_ffmpeg_source(player.current_source)
+            
             # Disconnect
             await vc.disconnect()
             await ctx.send("👋 **Đã thoát khỏi voice channel**")
@@ -148,9 +179,14 @@ def setup_music_commands(bot):
             # Apply volume to currently playing audio if any
             vc = ctx.guild.voice_client
             if vc and vc.is_playing() and player.now_playing:
-                # Apply volume immediately to current track from current position
-                await apply_volume_from_current_position(vc, player, volume_decimal)
-                await ctx.send(f"🔊 **Âm lượng đã được đặt thành:** {vol}% (đang áp dụng...)")
+                # Use our custom volume control (no process restart)
+                if hasattr(vc.source, 'volume'):
+                    vc.source.volume = volume_decimal
+                    await ctx.send(f"🔊 **Âm lượng đã được đặt thành:** {vol}% (áp dụng ngay lập tức)")
+                else:
+                    # Fallback to FFmpeg method if source doesn't support volume
+                    await apply_volume_from_current_position(vc, player, volume_decimal)
+                    await ctx.send(f"🔊 **Âm lượng đã được đặt thành:** {vol}% (đang áp dụng...)")
             else:
                 await ctx.send(f"🔊 **Âm lượng đã được đặt thành:** {vol}%")
             
@@ -193,11 +229,14 @@ async def apply_volume_from_current_position(vc: discord.VoiceClient, player, vo
         # Update start time to current position
         player.started_at = discord.utils.utcnow().timestamp() - current_time
         
-        # Stop current playback and start new one from current position
+        # Stop current playback first
         vc.stop()
         
-        # Minimal delay to ensure clean stop
-        await asyncio.sleep(0.05)
+        # Give more time for clean stop and cleanup
+        await asyncio.sleep(0.1)
+        
+        # Cleanup old source if exists
+        force_cleanup_ffmpeg_source(player.current_source)
         
         # Play with new volume from current position
         vc.play(source, after=lambda err: threading.Thread(target=lambda: asyncio.run(after_play_callback(err, player))).start())
@@ -222,10 +261,11 @@ async def play_next(guild, vc, player):
         ffmpeg_opts = build_ffmpeg_options(track)
         
         # Create audio source with current volume
-        source = discord.FFmpegPCMAudio(
+        source = VolumeControlledAudioSource(
             track.stream_url,
+            volume=player.volume,
             before_options=ffmpeg_opts,
-            options=f"-vn -af volume={player.volume}"
+            options="-vn"  # No volume filter needed, handled by our class
         )
         
         # Store source for cleanup
@@ -247,7 +287,7 @@ async def play_next(guild, vc, player):
         # When track finishes, update message to simple text
         if player.now_playing_msg:
             try:
-                await player.now_playing_msg.edit(content=f"✅ **Đã phát xong:** {track.title}")
+                await player.now_playing_msg.edit(content=f"✅ **Đã phát xong:** {track.title}", embed=None)
             except:
                 pass
         

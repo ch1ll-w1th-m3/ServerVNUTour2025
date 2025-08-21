@@ -15,6 +15,12 @@ class Track:
     requested_by: int
     headers: Dict[str, str] = field(default_factory=dict)
     
+    # Additional info for rich embed display
+    artist: Optional[str] = None
+    uploader: Optional[str] = None
+    thumbnail: Optional[str] = None
+    view_count: Optional[int] = None
+    
     def __str__(self):
         return f"{self.title} (requested by <@{self.requested_by}>)"
     
@@ -26,4 +32,7 @@ class Track:
         minutes = self.duration // 60
         seconds = self.duration % 60
         return f"{minutes}:{seconds:02d}"
+
+
+
 

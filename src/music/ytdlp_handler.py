@@ -54,6 +54,12 @@ async def ytdlp_extract(query: str, requested_by: int) -> Track:
         page_url = info.get("webpage_url", "")
         duration = info.get("duration")
         
+        # Get additional info for rich embed
+        artist = info.get("artist") or info.get("creator") or info.get("uploader")
+        uploader = info.get("uploader") or info.get("channel")
+        thumbnail = info.get("thumbnail")
+        view_count = info.get("view_count")
+        
         # Get headers for streaming
         headers = {}
         if "http_headers" in info:
@@ -65,7 +71,11 @@ async def ytdlp_extract(query: str, requested_by: int) -> Track:
             page_url=page_url,
             duration=duration,
             requested_by=requested_by,
-            headers=headers
+            headers=headers,
+            artist=artist,
+            uploader=uploader,
+            thumbnail=thumbnail,
+            view_count=view_count
         )
         
     except Exception as e:
@@ -74,27 +84,17 @@ async def ytdlp_extract(query: str, requested_by: int) -> Track:
 
 def build_ffmpeg_options(track: Track) -> str:
     """Build FFmpeg command line options for audio streaming"""
-    import shutil
-    
-    # Base options
+    # Base options - simplified to avoid issues
     base_opts = [
         "-reconnect", "1",
         "-reconnect_streamed", "1", 
         "-reconnect_delay_max", "5",
-        "-nostdin",
-        "-rw_timeout", "15000000"  # ~15s timeout
+        "-nostdin"
     ]
     
-    # Add headers if available
-    if track.headers:
-        headers_str = "".join(f"{k}: {v}\r\n" for k, v in track.headers.items())
-        base_opts.extend([
-            "-headers", f'"{headers_str}"'
-        ])
-        
-        # Add user agent if available
-        if "User-Agent" in track.headers:
-            base_opts.extend(["-user_agent", f'"{track.headers["User-Agent"]}"'])
-    
+    # For now, skip headers to avoid potential issues
+    # We can add them back later if needed
     return " ".join(base_opts)
+
+
 

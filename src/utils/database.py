@@ -105,3 +105,6 @@ class DatabaseManager:
 # Global database instance
 db = DatabaseManager()
 
+
+
+
