@@ -1,0 +1,90 @@
+"""
+Main bot class
+"""
+import discord
+from discord.ext import commands
+from .config import BotConfig
+from .logger import BotLogger
+
+
+class VnuTourBot(commands.Bot):
+    """Main bot class with commands support"""
+    
+    def __init__(self):
+        config = BotConfig()
+        super().__init__(
+            command_prefix=config.prefix,
+            intents=config.get_intents(),
+            help_command=None
+        )
+        
+        self.config = config
+        self.logger = BotLogger(self)
+        self.prefix = config.prefix
+        
+        # Initialize components
+        self._setup_events()
+        self._setup_commands()
+    
+    def _setup_events(self):
+        """Setup bot event handlers"""
+        from ..events import setup_events
+        setup_events(self)
+    
+    def _setup_commands(self):
+        """Setup bot commands"""
+        from ..commands import setup_commands
+        setup_commands(self)
+    
+    async def setup_hook(self):
+        """Called when the bot is starting up"""
+        await self.logger.log("Bot đang khởi động...")
+    
+    async def on_ready(self):
+        """Called when the bot is ready"""
+        await self.logger.log(f"Bot đã sẵn sàng! Đăng nhập với tên: {self.user}")
+        print(f"[BOT] Đã đăng nhập với tên: {self.user}")
+        
+        # Set bot status
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching,
+                name="!help để xem lệnh"
+            )
+        )
+    
+    async def on_command_error(self, ctx, error):
+        """Global command error handler"""
+        if isinstance(error, commands.CommandNotFound):
+            return  # Ignore unknown commands
+        
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ Bạn không có quyền sử dụng lệnh này!")
+            return
+        
+        if isinstance(error, commands.UserInputError):
+            await ctx.send(f"❌ **Lỗi đầu vào:** {str(error)}")
+            return
+        
+        # Log other errors
+        error_msg = f"Lỗi trong lệnh {ctx.command}: {error}"
+        await self.logger.log(error_msg)
+        print(f"[COMMAND ERROR] {error_msg}")
+        
+        # Send user-friendly error message
+        await ctx.send("❌ **Đã xảy ra lỗi!** Vui lòng thử lại sau.")
+    
+    async def on_error(self, event_method: str, *args, **kwargs):
+        """Global error handler"""
+        import traceback
+        error_msg = f"Lỗi trong event {event_method}: {traceback.format_exc()}"
+        await self.logger.log(error_msg)
+        print(f"[ERROR] {error_msg}")
+    
+    def run_bot(self):
+        """Start the bot"""
+        try:
+            self.run(self.config.token)
+        except Exception as e:
+            print(f"[FATAL ERROR] Không thể khởi động bot: {e}")
+            raise
