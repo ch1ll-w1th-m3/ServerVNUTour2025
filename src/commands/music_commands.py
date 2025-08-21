@@ -55,7 +55,7 @@ def setup_music_commands(bot):
             searching_msg = await ctx.send(f"🔍 **Đang tìm kiếm:** {query}")
             
             try:
-                # Extract track info
+                # Extract track info (already async optimized)
                 track = await ytdlp_extract(query, ctx.author.id)
                 
                 # Add to queue
@@ -64,9 +64,9 @@ def setup_music_commands(bot):
                 # Update searching message
                 await searching_msg.edit(content=f"✅ **Đã thêm vào queue:** {track.title}")
                 
-                # Start playing if not already playing
+                # Start playing if not already playing (non-blocking)
                 if not vc.is_playing():
-                    await play_next(ctx.guild, vc, player)
+                    asyncio.create_task(play_next(ctx.guild, vc, player))
                     
             except Exception as e:
                 await searching_msg.edit(content=f"❌ **Lỗi:** {str(e)}")
@@ -88,11 +88,11 @@ def setup_music_commands(bot):
                 vc.stop()
                 await ctx.send("⏭️ **Đã bỏ qua bài hát hiện tại**")
                 
-                # Get player and play next track
+                # Get player and play next track (non-blocking)
                 player = get_player(ctx.guild.id)
                 if player.queue:
                     await ctx.send("🔄 **Đang chuyển sang bài tiếp theo...**")
-                    await play_next(ctx.guild, vc, player)
+                    asyncio.create_task(play_next(ctx.guild, vc, player))
                 else:
                     await ctx.send("📭 **Queue đã hết, không còn bài nào để phát**")
             else:
@@ -280,24 +280,29 @@ async def play_next(guild, vc, player):
             now_playing_embed = create_now_playing_embed(track)
             player.now_playing_msg = await channel.send(embed=now_playing_embed)
         
-        # Wait for completion
-        await player.finished.wait()
-        player.finished.clear()
+        # Create background task to handle track completion
+        async def handle_track_completion():
+            # Wait for completion
+            await player.finished.wait()
+            player.finished.clear()
+            
+            # When track finishes, update message to simple text
+            if player.now_playing_msg:
+                try:
+                    await player.now_playing_msg.edit(content=f"✅ **Đã phát xong:** {track.title}", embed=None)
+                except:
+                    pass
+            
+            # Play next track if available
+            if player.queue:
+                await play_next(guild, vc, player)
+            else:
+                player.now_playing = None
+                player.started_at = None
+                player.now_playing_msg = None
         
-        # When track finishes, update message to simple text
-        if player.now_playing_msg:
-            try:
-                await player.now_playing_msg.edit(content=f"✅ **Đã phát xong:** {track.title}", embed=None)
-            except:
-                pass
-        
-        # Play next track if available
-        if player.queue:
-            await play_next(guild, vc, player)
-        else:
-            player.now_playing = None
-            player.started_at = None
-            player.now_playing_msg = None
+        # Start background task (non-blocking)
+        asyncio.create_task(handle_track_completion())
             
     except Exception as e:
         print(f"[PLAY NEXT ERROR] {e}")
