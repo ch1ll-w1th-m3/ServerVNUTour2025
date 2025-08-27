@@ -35,10 +35,23 @@ class VnuTourBot(commands.Bot):
         """Setup bot commands"""
         from ..commands import setup_commands
         setup_commands(self)
+        
+        # Setup slash commands
+        from ..commands import setup_slash_commands
+        setup_slash_commands(self)
     
     async def setup_hook(self):
         """Called when the bot is starting up"""
         await self.logger.log("Bot đang khởi động...")
+        
+        # Sync slash commands with Discord
+        try:
+            synced = await self.tree.sync()
+            await self.logger.log(f"Đã đồng bộ {len(synced)} slash command(s)")
+            print(f"[BOT] Đã đồng bộ {len(synced)} slash command(s)")
+        except Exception as e:
+            await self.logger.log(f"Lỗi đồng bộ slash commands: {e}")
+            print(f"[BOT ERROR] Lỗi đồng bộ slash commands: {e}")
     
     async def on_ready(self):
         """Called when the bot is ready"""

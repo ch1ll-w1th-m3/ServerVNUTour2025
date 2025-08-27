@@ -46,11 +46,11 @@ def setup_help_command(bot):
         embed.add_field(
             name="🎵 **Lệnh âm nhạc**",
             value=(
-                "`!play <tên/URL>` - Phát nhạc\n"
-                "`!skip` - Bỏ qua bài hát hiện tại\n"
-                "`!queue` - Hiển thị queue nhạc\n"
-                "`!stop` - Dừng phát nhạc\n"
-                "`!volume <0-200>` - Điều chỉnh âm lượng (phần trăm, áp dụng ngay lập tức)\n"
+                "`!play <tên/URL>` hoặc `/play <tên/URL>` - Phát nhạc\n"
+                "`!skip` hoặc `/skip` - Bỏ qua bài hát hiện tại\n"
+                "`!queue` hoặc `/queue` - Hiển thị queue nhạc\n"
+                "`!stop` hoặc `/stop` - Dừng phát nhạc\n"
+                "`!volume <0-200>` hoặc `/volume <0-200>` - Điều chỉnh âm lượng\n"
                 "`!exit` - Thoát khỏi voice channel"
             ),
             inline=False
@@ -73,9 +73,9 @@ def setup_help_command(bot):
         embed.add_field(
             name="🔧 **Lệnh admin**",
             value=(
-                "`!ping` - Kiểm tra độ trễ\n"
-                "`!info` - Thông tin bot\n"
-                "`!clear <số>` - Xóa tin nhắn\n"
+                "`!ping` hoặc `/ping` - Kiểm tra độ trễ\n"
+                "`!info` hoặc `/info` - Thông tin bot\n"
+                "`!clear <số>` hoặc `/clear <số>` - Xóa tin nhắn\n"
                 "`!kick <@user> <lý do>` - Kick\n"
                 "`!ban <@user> <lý do>` - Ban"
             ),
@@ -84,9 +84,13 @@ def setup_help_command(bot):
         
         embed.add_field(
             name="💡 **Ghi chú**",
-            value="Sử dụng `!help <tên lệnh>` để xem chi tiết lệnh cụ thể",
+            value=(
+                "• Sử dụng `!help <tên lệnh>` để xem chi tiết lệnh cụ thể\n"
+                "• Gõ `/` để xem tất cả slash commands với giao diện đẹp\n"
+                "• Cả hai loại lệnh đều hoạt động giống nhau!"
+            ),
             inline=False
         )
         
-        embed.set_footer(text="Prefix: ! | VnuTourBot v1.0")
+        embed.set_footer(text="Prefix: ! hoặc / | VnuTourBot v1.0")
         await ctx.send(embed=embed)
