@@ -273,6 +273,9 @@ def setup_slash_commands(bot):
             
             # Handle different status cases
             if status == "discord_already_used":
+                # Find the participant who is currently using this Discord ID
+                current_discord_user = mongo.participants.find_one({"discord_id": interaction.user.id})
+                
                 # Send detailed error message to user
                 error_embed = discord.Embed(
                     title="❌ **Lỗi: Discord ID đã được sử dụng**",
@@ -285,49 +288,35 @@ def setup_slash_commands(bot):
                     inline=False
                 )
                 error_embed.add_field(
-                    name="📋 **Thông tin MSSV hiện tại**",
-                    value=f"MSSV: {mssv}\nHọ và tên: {doc.get('full_name', 'Không có tên') if doc else 'Không tìm thấy'}",
+                    name="📋 **Thông tin người đang sử dụng Discord ID của bạn**",
+                    value=f"MSSV: {current_discord_user.get('mssv', 'Không có') if current_discord_user else 'Không tìm thấy'}\nHọ và tên: {current_discord_user.get('full_name', 'Không có tên') if current_discord_user else 'Không tìm thấy'}",
                     inline=False
                 )
                 
+                # Add support channel information
+                if bot.config.support_channel_id:
+                    support_channel = bot.get_channel(bot.config.support_channel_id)
+                    if support_channel:
+                        error_embed.add_field(
+                            name="📞 **Liên hệ hỗ trợ**",
+                            value=f"Vui lòng đến channel {support_channel.mention} để được admin hỗ trợ giải quyết vấn đề này.",
+                            inline=False
+                        )
+                    else:
+                        error_embed.add_field(
+                            name="📞 **Liên hệ hỗ trợ**",
+                            value="Vui lòng liên hệ admin để được hỗ trợ giải quyết vấn đề này.",
+                            inline=False
+                        )
+                else:
+                    error_embed.add_field(
+                        name="📞 **Liên hệ hỗ trợ**",
+                        value="Vui lòng liên hệ admin để được hỗ trợ giải quyết vấn đề này.",
+                        inline=False
+                    )
+                
+                # Send error message as ephemeral (only visible to the user)
                 await interaction.response.send_message(embed=error_embed, ephemeral=True)
-                
-                # Send notification to Support Ticket channel
-                try:
-                    support_channel_id = bot.config.support_channel_id
-                    if support_channel_id:
-                        support_channel = bot.get_channel(support_channel_id)
-                        if support_channel:
-                            support_embed = discord.Embed(
-                                title="🚨 **Yêu cầu hỗ trợ: Discord ID Conflict**",
-                                description=f"Người dùng {interaction.user.mention} gặp vấn đề khi liên kết MSSV",
-                                color=0xf39c12
-                            )
-                            support_embed.add_field(
-                                name="👤 **Người dùng**",
-                                value=f"Discord: {interaction.user.mention} (ID: {interaction.user.id})\nTên: {interaction.user.display_name}",
-                                inline=False
-                            )
-                            support_embed.add_field(
-                                name="📋 **MSSV yêu cầu**",
-                                value=f"MSSV: {mssv}\nHọ và tên: {doc.get('full_name', 'Không có tên') if doc else 'Không tìm thấy'}",
-                                inline=False
-                            )
-                            support_embed.add_field(
-                                name="⚠️ **Vấn đề**",
-                                value="Discord ID đã được sử dụng bởi MSSV khác. Cần admin hỗ trợ để giải quyết conflict.",
-                                inline=False
-                            )
-                            support_embed.add_field(
-                                name="🕒 **Thời gian**",
-                                value=discord.utils.format_dt(discord.utils.utcnow(), style='F'),
-                                inline=False
-                            )
-                            
-                            await support_channel.send(embed=support_embed)
-                except Exception as e:
-                    print(f"[SUPPORT ERROR] Không thể gửi thông báo đến Support channel: {e}")
-                
                 return
             
             if doc:
@@ -429,6 +418,157 @@ def setup_slash_commands(bot):
         except Exception as e:
             await interaction.response.send_message(f"❌ **Lỗi:** {e}", ephemeral=True)
 
+    # Admin command: Edit assign
+    @bot.tree.command(name="editassign", description="Admin: Chỉnh sửa liên kết Discord ID với MSSV")
+    @app_commands.describe(
+        user="User Discord để liên kết",
+        mssv="MSSV để liên kết"
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def editassign_slash(interaction: discord.Interaction, user: discord.Member, mssv: str):
+        """Admin command: Chỉnh sửa liên kết Discord ID với MSSV."""
+        try:
+            mongo = getattr(bot, "mongo", None)
+            if not mongo:
+                await interaction.response.send_message("❌ Hệ thống cơ sở dữ liệu chưa được cấu hình.", ephemeral=True)
+                return
+
+            # Kiểm tra MSSV có tồn tại không
+            participant = mongo.participants.find_one({"mssv": str(mssv).strip()})
+            if not participant:
+                await interaction.response.send_message(f"❌ **Lỗi:** MSSV {mssv} không tồn tại trong hệ thống.", ephemeral=True)
+                return
+
+            # Kiểm tra xem MSSV này đã được liên kết với Discord ID nào chưa
+            current_discord_id = participant.get("discord_id")
+            current_discord_user = None
+            if current_discord_id:
+                current_discord_user = mongo.participants.find_one({"discord_id": int(current_discord_id)})
+
+            # Kiểm tra xem Discord ID mới đã được sử dụng bởi MSSV khác chưa
+            existing_user = mongo.participants.find_one({"discord_id": user.id})
+            existing_mssv = None
+            if existing_user:
+                existing_mssv = existing_user.get("mssv")
+                if existing_mssv == mssv:
+                    # Nếu đã liên kết rồi thì không cần làm gì
+                    await interaction.response.send_message(f"ℹ️ **Thông tin:** MSSV {mssv} đã được liên kết với Discord ID của {user.mention} rồi.", ephemeral=True)
+                    return
+
+            # Thực hiện cập nhật
+            try:
+                # Xóa liên kết cũ của MSSV hiện tại (nếu có)
+                if current_discord_id:
+                    mongo.participants.update_one(
+                        {"mssv": str(mssv).strip()},
+                        {"$unset": {"discord_id": "", "updated_at": ""}}
+                    )
+
+                # Xóa liên kết cũ của Discord ID mới (nếu đang liên kết với MSSV khác)
+                if existing_mssv and existing_mssv != mssv:
+                    mongo.participants.update_one(
+                        {"mssv": existing_mssv},
+                        {"$unset": {"discord_id": "", "updated_at": ""}}
+                    )
+
+                # Gán Discord ID mới cho MSSV
+                mongo.participants.update_one(
+                    {"mssv": str(mssv).strip()},
+                    {"$set": {"discord_id": user.id, "updated_at": datetime.now(timezone.utc)}}
+                )
+
+                # Tạo embed thông báo thành công
+                embed = discord.Embed(
+                    title="✅ **Đã cập nhật liên kết Discord ID**",
+                    color=0x2ecc71
+                )
+                embed.add_field(
+                    name="👤 **Thông tin tham gia viên**",
+                    value=f"**Họ và tên:** {participant.get('full_name', 'Không có tên')}\n**MSSV:** {mssv}",
+                    inline=False
+                )
+                embed.add_field(
+                    name="🔗 **Discord ID mới**",
+                    value=f"{user.mention} ({user.id})",
+                    inline=True
+                )
+                
+                # Thông tin về các liên kết đã xóa
+                removed_links = []
+                if current_discord_id and current_discord_user:
+                    removed_links.append(f"MSSV {mssv} ↔ Discord ID {current_discord_id}")
+                if existing_mssv and existing_mssv != mssv:
+                    removed_links.append(f"MSSV {existing_mssv} ↔ Discord ID {user.id}")
+                
+                if removed_links:
+                    embed.add_field(
+                        name="🔄 **Liên kết đã xóa**",
+                        value="\n".join(removed_links),
+                        inline=False
+                    )
+                
+                embed.add_field(
+                    name="👨‍💼 **Admin thực hiện**",
+                    value=interaction.user.mention,
+                    inline=False
+                )
+                embed.add_field(
+                    name="🕒 **Thời gian**",
+                    value=datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S"),
+                    inline=False
+                )
+
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+                # Gửi DM thông báo cho user được gán
+                try:
+                    user_embed = discord.Embed(
+                        title="🔗 **Bạn đã được liên kết với MSSV mới**",
+                        description=f"Admin {interaction.user.name} đã liên kết Discord của bạn với MSSV {mssv}.",
+                        color=0x3498db
+                    )
+                    user_embed.add_field(
+                        name="📋 **Thông tin MSSV**",
+                        value=f"**Họ và tên:** {participant.get('full_name', 'Không có tên')}\n**MSSV:** {mssv}",
+                        inline=False
+                    )
+                    
+                    # Thông tin về liên kết cũ (nếu có)
+                    if existing_mssv and existing_mssv != mssv:
+                        user_embed.add_field(
+                            name="🔄 **Liên kết cũ đã bị xóa**",
+                            value=f"Discord của bạn không còn liên kết với MSSV {existing_mssv}",
+                            inline=False
+                        )
+                    
+                    user_embed.add_field(
+                        name="👨‍💼 **Admin thực hiện**",
+                        value=interaction.user.name,
+                        inline=True
+                    )
+                    user_embed.add_field(
+                        name="🕒 **Thời gian**",
+                        value=datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S"),
+                        inline=True
+                    )
+                    
+                    await user.send(embed=user_embed)
+                except discord.Forbidden:
+                    await interaction.followup.send(f"⚠️ Không thể gửi DM cho {user.mention}. Họ có thể đã tắt DM.", ephemeral=True)
+
+            except Exception as e:
+                await interaction.response.send_message(f"❌ **Lỗi khi cập nhật:** {e}", ephemeral=True)
+
+        except Exception as e:
+            await interaction.response.send_message(f"❌ **Lỗi:** {e}", ephemeral=True)
+
+    @editassign_slash.error
+    async def editassign_slash_error(interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message("❌ **Lỗi:** Bạn không có quyền sử dụng lệnh này! Chỉ admin mới được phép.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"❌ **Lỗi:** {error}", ephemeral=True)
+
     # Help Command
     @bot.tree.command(name="help", description="Hiển thị hướng dẫn sử dụng bot")
     async def help_slash(interaction: discord.Interaction):
@@ -458,7 +598,8 @@ def setup_slash_commands(bot):
             value=(
                 "`/ping` - Kiểm tra độ trễ\n"
                 "`/info` - Thông tin bot\n"
-                "`/clear <số>` - Xóa tin nhắn"
+                "`/clear <số>` - Xóa tin nhắn\n"
+                "`/editassign <user> <mssv>` - Chỉnh sửa liên kết Discord ID với MSSV (Admin only)"
             ),
             inline=False
         )

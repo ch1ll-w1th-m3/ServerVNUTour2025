@@ -3,6 +3,7 @@ Admin-related commands
 """
 import discord
 from discord.ext import commands
+from datetime import datetime, timezone
 
 
 def setup_admin_commands(bot):
@@ -65,6 +66,9 @@ def setup_admin_commands(bot):
 
             # Handle different status cases
             if status == "discord_already_used":
+                # Find the participant who is currently using this Discord ID
+                current_discord_user = mongo.participants.find_one({"discord_id": ctx.author.id})
+                
                 # Send detailed error message to user
                 error_embed = discord.Embed(
                     title="❌ **Lỗi: Discord ID đã được sử dụng**",
@@ -77,48 +81,40 @@ def setup_admin_commands(bot):
                     inline=False
                 )
                 error_embed.add_field(
-                    name="📋 **Thông tin MSSV hiện tại**",
-                    value=f"MSSV: {mssv}\nHọ và tên: {doc.get('full_name', 'Không có tên') if doc else 'Không tìm thấy'}",
+                    name="📋 **Thông tin người đang sử dụng Discord ID của bạn**",
+                    value=f"MSSV: {current_discord_user.get('mssv', 'Không có') if current_discord_user else 'Không tìm thấy'}\nHọ và tên: {current_discord_user.get('full_name', 'Không có tên') if current_discord_user else 'Không tìm thấy'}",
                     inline=False
                 )
                 
-                await ctx.send(embed=error_embed)
+                # Add support channel information
+                if bot.config.support_channel_id:
+                    support_channel = bot.get_channel(bot.config.support_channel_id)
+                    if support_channel:
+                        error_embed.add_field(
+                            name="📞 **Liên hệ hỗ trợ**",
+                            value=f"Vui lòng đến channel {support_channel.mention} để được admin hỗ trợ giải quyết vấn đề này.",
+                            inline=False
+                        )
+                    else:
+                        error_embed.add_field(
+                            name="📞 **Liên hệ hỗ trợ**",
+                            value="Vui lòng liên hệ admin để được hỗ trợ giải quyết vấn đề này.",
+                            inline=False
+                        )
+                else:
+                    error_embed.add_field(
+                        name="📞 **Liên hệ hỗ trợ**",
+                        value="Vui lòng liên hệ admin để được hỗ trợ giải quyết vấn đề này.",
+                        inline=False
+                    )
                 
-                # Send notification to Support Ticket channel
+                # Try to send DM first, fallback to public reply if DM fails
                 try:
-                    support_channel_id = bot.config.support_channel_id
-                    if support_channel_id:
-                        support_channel = bot.get_channel(support_channel_id)
-                        if support_channel:
-                            support_embed = discord.Embed(
-                                title="🚨 **Yêu cầu hỗ trợ: Discord ID Conflict**",
-                                description=f"Người dùng {ctx.author.mention} gặp vấn đề khi liên kết MSSV",
-                                color=0xf39c12
-                            )
-                            support_embed.add_field(
-                                name="👤 **Người dùng**",
-                                value=f"Discord: {ctx.author.mention} (ID: {ctx.author.id})\nTên: {ctx.author.display_name}",
-                                inline=False
-                            )
-                            support_embed.add_field(
-                                name="📋 **MSSV yêu cầu**",
-                                value=f"MSSV: {mssv}\nHọ và tên: {doc.get('full_name', 'Không có tên') if doc else 'Không tìm thấy'}",
-                                inline=False
-                            )
-                            support_embed.add_field(
-                                name="⚠️ **Vấn đề**",
-                                value="Discord ID đã được sử dụng bởi MSSV khác. Cần admin hỗ trợ để giải quyết conflict.",
-                                inline=False
-                            )
-                            support_embed.add_field(
-                                name="🕒 **Thời gian**",
-                                value=discord.utils.format_dt(discord.utils.utcnow(), style='F'),
-                                inline=False
-                            )
-                            
-                            await support_channel.send(embed=support_embed)
-                except Exception as e:
-                    print(f"[SUPPORT ERROR] Không thể gửi thông báo đến Support channel: {e}")
+                    await ctx.author.send(embed=error_embed)
+                    await ctx.reply("📬 Đã gửi thông tin lỗi qua tin nhắn riêng (DM). Vui lòng kiểm tra DM của bạn.", mention_author=False)
+                except discord.Forbidden:
+                    # If DM fails, send public reply (ephemeral-like behavior)
+                    await ctx.reply("📬 **Lỗi Discord ID Conflict** - Vui lòng mở DM để nhận thông tin chi tiết.", mention_author=False)
                 
                 return
 
@@ -332,6 +328,156 @@ def setup_admin_commands(bot):
     async def ban_error(ctx, error):
         if isinstance(error, commands.MissingPermissions):
             await ctx.send("Bạn không có quyền sử dụng lệnh này!")
+
+    @bot.command(name="editassign")
+    @commands.has_permissions(administrator=True)
+    async def editassign(ctx, member: discord.Member, mssv: str):
+        """Admin command: Chỉnh sửa liên kết Discord ID với MSSV."""
+        try:
+            mongo = getattr(bot, "mongo", None)
+            if not mongo:
+                await ctx.send("❌ Hệ thống cơ sở dữ liệu chưa được cấu hình.")
+                return
+
+            # Kiểm tra MSSV có tồn tại không
+            participant = mongo.participants.find_one({"mssv": str(mssv).strip()})
+            if not participant:
+                await ctx.send(f"❌ **Lỗi:** MSSV {mssv} không tồn tại trong hệ thống.")
+                return
+
+            # Kiểm tra xem MSSV này đã được liên kết với Discord ID nào chưa
+            current_discord_id = participant.get("discord_id")
+            current_discord_user = None
+            if current_discord_id:
+                current_discord_user = mongo.participants.find_one({"discord_id": int(current_discord_id)})
+
+            # Kiểm tra xem Discord ID mới đã được sử dụng bởi MSSV khác chưa
+            existing_user = mongo.participants.find_one({"discord_id": member.id})
+            existing_mssv = None
+            if existing_user:
+                existing_mssv = existing_user.get("mssv")
+                if existing_mssv == mssv:
+                    # Nếu đã liên kết rồi thì không cần làm gì
+                    await ctx.send(f"ℹ️ **Thông tin:** MSSV {mssv} đã được liên kết với Discord ID của {member.mention} rồi.")
+                    return
+
+            # Thực hiện cập nhật
+            try:
+                # Xóa liên kết cũ của MSSV hiện tại (nếu có)
+                if current_discord_id:
+                    mongo.participants.update_one(
+                        {"mssv": str(mssv).strip()},
+                        {"$unset": {"discord_id": "", "updated_at": ""}}
+                    )
+                    await ctx.send(f"🔄 **Đã xóa liên kết cũ:** MSSV {mssv} không còn liên kết với Discord ID {current_discord_id}")
+
+                # Xóa liên kết cũ của Discord ID mới (nếu đang liên kết với MSSV khác)
+                if existing_mssv and existing_mssv != mssv:
+                    mongo.participants.update_one(
+                        {"mssv": existing_mssv},
+                        {"$unset": {"discord_id": "", "updated_at": ""}}
+                    )
+                    await ctx.send(f"🔄 **Đã xóa liên kết cũ:** Discord ID {member.mention} không còn liên kết với MSSV {existing_mssv}")
+
+                # Gán Discord ID mới cho MSSV
+                mongo.participants.update_one(
+                    {"mssv": str(mssv).strip()},
+                    {"$set": {"discord_id": member.id, "updated_at": datetime.now(timezone.utc)}}
+                )
+
+                # Tạo embed thông báo thành công
+                embed = discord.Embed(
+                    title="✅ **Đã cập nhật liên kết Discord ID**",
+                    color=0x2ecc71
+                )
+                embed.add_field(
+                    name="👤 **Thông tin tham gia viên**",
+                    value=f"**Họ và tên:** {participant.get('full_name', 'Không có tên')}\n**MSSV:** {mssv}",
+                    inline=False
+                )
+                embed.add_field(
+                    name="🔗 **Discord ID mới**",
+                    value=f"{member.mention} ({member.id})",
+                    inline=True
+                )
+                
+                # Thông tin về các liên kết đã xóa
+                removed_links = []
+                if current_discord_id and current_discord_user:
+                    removed_links.append(f"MSSV {mssv} ↔ Discord ID {current_discord_id}")
+                if existing_mssv and existing_mssv != mssv:
+                    removed_links.append(f"MSSV {existing_mssv} ↔ Discord ID {member.id}")
+                
+                if removed_links:
+                    embed.add_field(
+                        name="🔄 **Liên kết đã xóa**",
+                        value="\n".join(removed_links),
+                        inline=False
+                    )
+                
+                embed.add_field(
+                    name="👨‍💼 **Admin thực hiện**",
+                    value=ctx.author.mention,
+                    inline=False
+                )
+                embed.add_field(
+                    name="🕒 **Thời gian**",
+                    value=datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S"),
+                    inline=False
+                )
+
+                await ctx.send(embed=embed)
+
+                # Gửi DM thông báo cho user được gán
+                try:
+                    user_embed = discord.Embed(
+                        title="🔗 **Bạn đã được liên kết với MSSV mới**",
+                        description=f"Admin {ctx.author.name} đã liên kết Discord của bạn với MSSV {mssv}.",
+                        color=0x3498db
+                    )
+                    user_embed.add_field(
+                        name="📋 **Thông tin MSSV**",
+                        value=f"**Họ và tên:** {participant.get('full_name', 'Không có tên')}\n**MSSV:** {mssv}",
+                        inline=False
+                    )
+                    
+                    # Thông tin về liên kết cũ (nếu có)
+                    if existing_mssv and existing_mssv != mssv:
+                        user_embed.add_field(
+                            name="🔄 **Liên kết cũ đã bị xóa**",
+                            value=f"Discord của bạn không còn liên kết với MSSV {existing_mssv}",
+                            inline=False
+                        )
+                    
+                    user_embed.add_field(
+                        name="👨‍💼 **Admin thực hiện**",
+                        value=ctx.author.name,
+                        inline=True
+                    )
+                    user_embed.add_field(
+                        name="🕒 **Thời gian**",
+                        value=datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S"),
+                        inline=True
+                    )
+                    
+                    await member.send(embed=user_embed)
+                except discord.Forbidden:
+                    await ctx.send(f"⚠️ Không thể gửi DM cho {member.mention}. Họ có thể đã tắt DM.")
+
+            except Exception as e:
+                await ctx.send(f"❌ **Lỗi khi cập nhật:** {e}")
+
+        except Exception as e:
+            await ctx.send(f"❌ **Lỗi:** {e}")
+
+    @editassign.error
+    async def editassign_error(ctx, error):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ **Lỗi:** Bạn không có quyền sử dụng lệnh này! Chỉ admin mới được phép.")
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send("❌ **Lỗi:** Thiếu tham số! Sử dụng: `!editassign @user <mssv>`")
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send("❌ **Lỗi:** Tham số không hợp lệ! Sử dụng: `!editassign @user <mssv>`")
 
     @unban.error
     async def unban_error(ctx, error):

@@ -75,6 +75,7 @@ def setup_help_command(bot):
             value=(
                 "`!assign <mssv>` hoặc `/assign mssv:<mssv>` - Liên kết Discord với MSSV.\n"
                 "`!check [mssv]` hoặc `/check [mssv]` - Kiểm tra thông tin tham gia viên.\n"
+                "`!editassign @<user> <mssv>` hoặc `/editassign <user> <mssv>` - Chỉnh sửa liên kết Discord ID với MSSV (Admin only).\n"
                 "`!syncstatus` - Xem trạng thái đồng bộ Google Sheet.\n"
                 "`!syncnow` - Ép đồng bộ ngay (admin).\n"
                 "Yêu cầu MSSV đã tồn tại trong cơ sở dữ liệu."

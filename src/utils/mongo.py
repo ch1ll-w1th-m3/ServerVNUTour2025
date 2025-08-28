@@ -41,13 +41,46 @@ class MongoManager:
         if MongoClient is None:
             raise RuntimeError("Thiếu thư viện pymongo. Vui lòng `pip install -r requirements.txt`.")
 
-        self.client = MongoClient(self.uri)
+        # Add connection timeout and server selection timeout
+        self.client = MongoClient(
+            self.uri,
+            serverSelectionTimeoutMS=10000,  # 10 seconds timeout
+            connectTimeoutMS=10000,          # 10 seconds connection timeout
+            socketTimeoutMS=30000,           # 30 seconds socket timeout
+            maxPoolSize=10,                  # Limit connection pool
+            minPoolSize=1,                   # Minimum connections
+            maxIdleTimeMS=30000,             # Close idle connections after 30s
+            waitQueueTimeoutMS=5000,         # Wait queue timeout
+            retryWrites=True,                # Enable retry for writes
+            retryReads=True                  # Enable retry for reads
+        )
         self.db = self.client[self.db_name]
         self.participants: Collection = self.db["participants"]
         self.teams: Collection = self.db["teams"]
         self.meta: Collection = self.db["meta"]
 
+        # Test connection
+        try:
+            self.client.admin.command('ping')
+            print("[DB] Kết nối MongoDB thành công")
+        except Exception as e:
+            print(f"[DB] Lỗi kết nối MongoDB: {e}")
+            raise
+
         self._ensure_indexes()
+
+    def is_healthy(self) -> bool:
+        """Check if MongoDB connection is healthy"""
+        try:
+            self.client.admin.command('ping')
+            return True
+        except Exception:
+            return False
+
+    def close(self):
+        """Close MongoDB connection"""
+        if hasattr(self, 'client'):
+            self.client.close()
 
     # ----- Indexes -----
     def _ensure_indexes(self):
@@ -156,30 +189,119 @@ class MongoManager:
         return self.teams.find_one(key)
 
     # ----- Bulk sync from rows -----
+    async def sync_from_rows_async(self, rows: list[Dict[str, Any]]) -> Dict[str, Any]:
+        """Sync many rows from a sheet-exported dataset asynchronously.
+
+        Returns a summary dict.
+        """
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        updated = 0
+        created = 0
+        errors = 0
+        
+        # Use ThreadPoolExecutor to run MongoDB operations in background
+        executor = ThreadPoolExecutor(max_workers=1)
+        
+        def sync_single_row(row_data):
+            try:
+                mssv = self._norm_mssv(row_data.get("mssv"))
+                if not mssv:
+                    return None, None
+                    
+                before = self.participants.find_one({"mssv": mssv})
+                self.upsert_participant(row_data)
+                
+                # Upsert team and member mapping
+                team_doc = self.upsert_team(row_data.get("team_id"), row_data.get("team_name"))
+                if team_doc and mssv:
+                    self.teams.update_one(
+                        {"_id": team_doc["_id"]},
+                        {"$addToSet": {"members_mssv": mssv}},
+                    )
+                    
+                return before, None
+                
+            except Exception as e:
+                return None, str(e)
+        
+        # Process rows in batches to avoid overwhelming the thread pool
+        batch_size = 10
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            
+            # Submit batch to thread pool
+            loop = asyncio.get_event_loop()
+            futures = [
+                loop.run_in_executor(executor, sync_single_row, row)
+                for row in batch
+            ]
+            
+            # Wait for batch to complete
+            batch_results = await asyncio.gather(*futures, return_exceptions=True)
+            
+            # Process results
+            for j, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    errors += 1
+                    print(f"[SYNC ERROR] Row {i+j}: {result}")
+                    continue
+                    
+                before, error = result
+                if error:
+                    errors += 1
+                    print(f"[SYNC ERROR] Row {i+j}: {error}")
+                    continue
+                    
+                if before:
+                    updated += 1
+                else:
+                    created += 1
+            
+            # Small delay between batches to prevent overwhelming
+            await asyncio.sleep(0.1)
+        
+        executor.shutdown(wait=False)
+        return {"created": created, "updated": updated, "errors": errors}
+
     def sync_from_rows(self, rows: list[Dict[str, Any]]) -> Dict[str, Any]:
-        """Sync many rows from a sheet-exported dataset.
+        """Sync many rows from a sheet-exported dataset (synchronous version).
 
         Returns a summary dict.
         """
         updated = 0
         created = 0
-        for r in rows:
-            before = self.participants.find_one({"mssv": self._norm_mssv(r.get("mssv"))})
-            self.upsert_participant(r)
-            if before:
-                updated += 1
-            else:
-                created += 1
+        errors = 0
+        
+        for i, r in enumerate(rows):
+            try:
+                mssv = self._norm_mssv(r.get("mssv"))
+                if not mssv:
+                    continue
+                    
+                before = self.participants.find_one({"mssv": mssv})
+                self.upsert_participant(r)
+                if before:
+                    updated += 1
+                else:
+                    created += 1
 
-            # Upsert team and member mapping
-            team_doc = self.upsert_team(r.get("team_id"), r.get("team_name"))
-            if team_doc and r.get("mssv"):
-                self.teams.update_one(
-                    {"_id": team_doc["_id"]},
-                    {"$addToSet": {"members_mssv": self._norm_mssv(r.get("mssv"))}},
-                )
+                # Upsert team and member mapping
+                team_doc = self.upsert_team(r.get("team_id"), r.get("team_name"))
+                if team_doc and mssv:
+                    self.teams.update_one(
+                        {"_id": team_doc["_id"]},
+                        {"$addToSet": {"members_mssv": mssv}},
+                    )
+                    
+            except Exception as e:
+                errors += 1
+                print(f"[SYNC ERROR] Row {i}: {e}")
+                # Continue with next row instead of failing completely
+                continue
 
-        return {"created": created, "updated": updated}
+        return {"created": created, "updated": updated, "errors": errors}
 
     # ----- Meta helpers -----
     def get_meta(self, key: str) -> Optional[Any]:
