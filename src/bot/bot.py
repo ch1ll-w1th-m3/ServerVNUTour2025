@@ -5,6 +5,8 @@ import discord
 from discord.ext import commands
 from .config import BotConfig
 from .logger import BotLogger
+from ..utils import MongoManager
+from .sync import SheetSyncer
 
 
 class VnuTourBot(commands.Bot):
@@ -21,10 +23,22 @@ class VnuTourBot(commands.Bot):
         self.config = config
         self.logger = BotLogger(self)
         self.prefix = config.prefix
+        self.mongo = None
+        self.sheet_syncer = None
         
         # Initialize components
         self._setup_events()
         self._setup_commands()
+
+        # Initialize MongoDB if configured
+        try:
+            if self.config.mongodb_uri:
+                self.mongo = MongoManager(self.config.mongodb_uri, self.config.mongodb_db)
+                print("[DB] Kết nối MongoDB thành công")
+            else:
+                print("[DB] Chưa cấu hình MongoDB (bỏ qua)")
+        except Exception as e:
+            print(f"[DB ERROR] Không thể kết nối MongoDB: {e}")
     
     def _setup_events(self):
         """Setup bot event handlers"""
@@ -39,10 +53,18 @@ class VnuTourBot(commands.Bot):
         # Setup slash commands
         from ..commands import setup_slash_commands
         setup_slash_commands(self)
+        
     
     async def setup_hook(self):
         """Called when the bot is starting up"""
         await self.logger.log("Bot đang khởi động...")
+        
+        # Setup Google Sheet sync as Cog
+        try:
+            from .sheet_cog import setup_sheet_sync
+            await setup_sheet_sync(self)
+        except Exception as e:
+            print(f"[SHEET SYNC] Không thể khởi tạo Cog: {e}")
         
         # Sync slash commands with Discord
         try:

@@ -116,7 +116,7 @@ VnuTourBot/
 │   │   └── ytdlp_handler.py
 │   └── utils/            # Utilities
 │       ├── __init__.py
-│       ├── database.py   # Database management
+│       ├── mongo.py      # MongoDB management
 │       └── role_manager.py
 ```
 
@@ -139,7 +139,7 @@ Bot cần các quyền sau:
 
 ## 📝 Ghi chú
 
-- Bot sử dụng JSON database đơn giản (có thể thay thế bằng MongoDB)
+- Bot sử dụng MongoDB làm database chính
 - Hỗ trợ tối đa 10 trạm tour
 - Mỗi trạm chỉ có thể có 1 đội tại một thời điểm
 - Âm nhạc sử dụng yt-dlp và FFmpeg

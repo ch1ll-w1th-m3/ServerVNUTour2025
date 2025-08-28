@@ -7,6 +7,7 @@ from ..music.player import get_player, ensure_voice, after_play_callback, force_
 from ..music.ytdlp_handler import ytdlp_extract, build_ffmpeg_options
 import asyncio
 import threading
+from datetime import datetime, timezone
 
 
 class VolumeControlledAudioSource(discord.FFmpegPCMAudio):
@@ -205,7 +206,7 @@ async def apply_volume_from_current_position(vc: discord.VoiceClient, player, vo
         # Calculate current playback position
         current_time = 0
         if player.started_at:
-            current_time = discord.utils.utcnow().timestamp() - player.started_at
+            current_time = datetime.now(timezone.utc).timestamp() - player.started_at
         
         # Ensure current_time is not negative
         current_time = max(0, current_time)
@@ -227,7 +228,7 @@ async def apply_volume_from_current_position(vc: discord.VoiceClient, player, vo
         player.current_source = source
         
         # Update start time to current position
-        player.started_at = discord.utils.utcnow().timestamp() - current_time
+        player.started_at = datetime.now(timezone.utc).timestamp() - current_time
         
         # Stop current playback first
         vc.stop()
@@ -255,7 +256,7 @@ async def play_next(guild, vc, player):
         
         # Set as now playing
         player.now_playing = track
-        player.started_at = discord.utils.utcnow().timestamp()
+        player.started_at = datetime.now(timezone.utc).timestamp()
         
         # Build FFmpeg options
         ffmpeg_opts = build_ffmpeg_options(track)

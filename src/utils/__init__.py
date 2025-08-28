@@ -2,10 +2,10 @@
 Utility functions and helpers
 """
 
-from .database import DatabaseManager
 from .role_manager import RoleManager
+from .mongo import MongoManager
 
-__all__ = ['DatabaseManager', 'RoleManager']
+__all__ = ['RoleManager', 'MongoManager']
 
 
 

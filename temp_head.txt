@@ -1,0 +1,250 @@
+"""
+Slash commands for the bot
+"""
+import discord
+from discord import app_commands
+from discord.ext import commands
+from ..music.player import get_player, ensure_voice, after_play_callback, force_cleanup_ffmpeg_source
+from ..music.ytdlp_handler import ytdlp_extract, build_ffmpeg_options
+import asyncio
+import threading
+
+
+class VolumeControlledAudioSource(discord.FFmpegPCMAudio):
+    """Custom audio source with volume control"""
+    
+    def __init__(self, source, volume=1.0, **kwargs):
+        super().__init__(source, **kwargs)
+        self._volume = volume
+    
+    @property
+    def volume(self):
+        return self._volume
+    
+    @volume.setter
+    def volume(self, value):
+        self._volume = max(0.0, min(2.0, value))
+    
+    def read(self):
+        """Read audio data with volume applied"""
+        data = super().read()
+        if data and self._volume != 1.0:
+            # Apply volume by scaling the audio data
+            import array
+            audio_array = array.array('h', data)
+            for i in range(len(audio_array)):
+                audio_array[i] = int(audio_array[i] * self._volume)
+            data = audio_array.tobytes()
+        return data
+
+
+def setup_slash_commands(bot):
+    """Setup all slash commands"""
+    
+    # Music Commands Group
+    @bot.tree.command(name="play", description="Phát nhạc từ YouTube")
+    @app_commands.describe(query="Tên bài hát hoặc URL YouTube")
+    async def play_slash(interaction: discord.Interaction, query: str):
+        """Phát nhạc từ YouTube"""
+        try:
+            # Defer the response since this might take a while
+            await interaction.response.defer()
+            
+            # Create a mock context for compatibility with existing functions
+            class MockContext:
+                def __init__(self, interaction):
+                    self.guild = interaction.guild
+                    self.channel = interaction.channel
+                    self.author = interaction.user
+                    self.message = interaction
+                    
+                async def send(self, content=None, embed=None):
+                    if interaction.response.is_done():
+                        return await interaction.followup.send(content=content, embed=embed)
+                    else:
+                        return await interaction.response.send_message(content=content, embed=embed)
+            
+            ctx = MockContext(interaction)
+            
+            # Ensure bot is in voice channel
+            vc = await ensure_voice(ctx.message)
+            
+            # Get or create player
+            player = get_player(ctx.guild.id)
+            player.text_channel_id = ctx.channel.id
+            
+            # Show searching message
+            await interaction.followup.send(f"🔍 **Đang tìm kiếm:** {query}")
+            
+            try:
+                # Extract track info
+                track = await ytdlp_extract(query, ctx.author.id)
+                
+                # Add to queue
+                player.add_track(track)
+                
+                # Update message
+                await interaction.followup.send(f"✅ **Đã thêm vào queue:** {track.title}")
+                
+                # Start playing if not already playing
+                if not vc.is_playing():
+                    asyncio.create_task(play_next(ctx.guild, vc, player))
+                    
+            except Exception as e:
+                await interaction.followup.send(f"❌ **Lỗi:** {str(e)}")
+                
+        except Exception as e:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ **Lỗi:** {str(e)}")
+            else:
+                await interaction.followup.send(f"❌ **Lỗi:** {str(e)}")
+    
+    @bot.tree.command(name="skip", description="Bỏ qua bài hát hiện tại")
+    async def skip_slash(interaction: discord.Interaction):
+        """Bỏ qua bài hát hiện tại"""
+        try:
+            vc = interaction.guild.voice_client
+            if not vc or not vc.is_connected():
+                await interaction.response.send_message("❌ Bot không ở trong voice channel")
+                return
+            
+            if vc.is_playing():
+                # Stop current track and trigger next
+                vc.stop()
+                await interaction.response.send_message("⏭️ **Đã bỏ qua bài hát hiện tại**")
+                
+                # Get player and play next track
+                player = get_player(interaction.guild.id)
+                if player.queue:
+                    await interaction.followup.send("🔄 **Đang chuyển sang bài tiếp theo...**")
+                    asyncio.create_task(play_next(interaction.guild, vc, player))
+                else:
+                    await interaction.followup.send("📭 **Queue đã hết, không còn bài nào để phát**")
+            else:
+                await interaction.response.send_message("❌ Không có gì đang phát")
+                
+        except Exception as e:
+            await interaction.response.send_message(f"❌ **Lỗi:** {str(e)}")
+    
+    @bot.tree.command(name="queue", description="Hiển thị queue nhạc")
+    async def queue_slash(interaction: discord.Interaction):
+        """Hiển thị queue nhạc"""
+        try:
+            player = get_player(interaction.guild.id)
+            queue_info = player.get_queue_info()
+            
+            if player.now_playing:
+                now_playing = f"🎵 **Đang phát:** {player.now_playing.title}\n\n"
+            else:
+                now_playing = ""
+            
+            await interaction.response.send_message(f"{now_playing}{queue_info}")
+            
+        except Exception as e:
+            await interaction.response.send_message(f"❌ **Lỗi:** {str(e)}")
+    
+    @bot.tree.command(name="stop", description="Dừng phát nhạc và rời voice channel")
+    async def stop_slash(interaction: discord.Interaction):
+        """Dừng phát nhạc và rời voice channel"""
+        try:
+            vc = interaction.guild.voice_client
+            if not vc or not vc.is_connected():
+                await interaction.response.send_message("❌ Bot không ở trong voice channel")
+                return
+            
+            # Clear queue and stop
+            player = get_player(interaction.guild.id)
+            player.clear_queue()
+            player.skip_current()
+            
+            # Disconnect
+            await vc.disconnect()
+            await interaction.response.send_message("⏹️ **Đã dừng phát nhạc và rời voice channel**")
+            
+        except Exception as e:
+            await interaction.response.send_message(f"❌ **Lỗi:** {str(e)}")
+    
+    @bot.tree.command(name="volume", description="Điều chỉnh âm lượng (0-200%)")
+    @app_commands.describe(level="Mức âm lượng từ 0 đến 200 (%)")
+    async def volume_slash(interaction: discord.Interaction, level: int):
+        """Điều chỉnh âm lượng (0-200%)"""
+        try:
+            if not 0 <= level <= 200:
+                await interaction.response.send_message("❌ Âm lượng phải từ 0% đến 200%")
+                return
+            
+            player = get_player(interaction.guild.id)
+            # Convert percentage to decimal (0-2.0)
+            volume_decimal = level / 100.0
+            player.set_volume(volume_decimal)
+            
+            # Apply volume to currently playing audio if any
+            vc = interaction.guild.voice_client
+            if vc and vc.is_playing() and player.now_playing:
+                # Use our custom volume control
+                if hasattr(vc.source, 'volume'):
+                    vc.source.volume = volume_decimal
+                    await interaction.response.send_message(f"🔊 **Âm lượng đã được đặt thành:** {level}% (áp dụng ngay lập tức)")
+                else:
+                    # Fallback to FFmpeg method if source doesn't support volume
+                    await apply_volume_from_current_position(vc, player, volume_decimal)
+                    await interaction.response.send_message(f"🔊 **Âm lượng đã được đặt thành:** {level}% (đang áp dụng...)")
+            else:
+                await interaction.response.send_message(f"🔊 **Âm lượng đã được đặt thành:** {level}%")
+            
+        except Exception as e:
+            await interaction.response.send_message(f"❌ **Lỗi:** {str(e)}")
+    
+    # Admin Commands
+    @bot.tree.command(name="ping", description="Kiểm tra độ trễ của bot")
+    async def ping_slash(interaction: discord.Interaction):
+        """Kiểm tra độ trễ của bot"""
+        latency = round(bot.latency * 1000)
+        await interaction.response.send_message(f"🏓 **Pong!** Độ trễ: {latency}ms")
+    
+    @bot.tree.command(name="info", description="Thông tin về bot")
+    async def info_slash(interaction: discord.Interaction):
+        """Thông tin về bot"""
+        embed = discord.Embed(
+            title="🤖 **VnuTourBot**",
+            description="Bot quản lý tour VNU với chức năng âm nhạc",
+            color=0x00ff00
+        )
+        
+        embed.add_field(
+            name="📊 **Thống kê**",
+            value=f"Servers: {len(bot.guilds)}\nUsers: {len(bot.users)}",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🏓 **Độ trễ**",
+            value=f"{round(bot.latency * 1000)}ms",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🐍 **Phiên bản**",
+            value=f"discord.py {discord.__version__}",
+            inline=True
+        )
+        
+        embed.set_footer(text="VnuTourBot v1.0")
+        await interaction.response.send_message(embed=embed)
+    
+    @bot.tree.command(name="clear", description="Xóa tin nhắn (chỉ admin)")
+    @app_commands.describe(amount="Số lượng tin nhắn cần xóa")
+    @app_commands.default_permissions(manage_messages=True)
+    async def clear_slash(interaction: discord.Interaction, amount: int):
+        """Xóa tin nhắn (chỉ admin)"""
+        try:
+            if amount < 1 or amount > 100:
+                await interaction.response.send_message("❌ Số lượng tin nhắn phải từ 1 đến 100")
+                return
+            
+            # Defer response since this might take a while
+            await interaction.response.defer(ephemeral=True)
+            
+            deleted = await interaction.channel.purge(limit=amount)
+            await interaction.followup.send(f"🗑️ **Đã xóa {len(deleted)} tin nhắn**", ephemeral=True)
+            

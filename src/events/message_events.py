@@ -1,7 +1,10 @@
 """
-Message-related events (edit, delete, etc.)
+Message event handlers
 """
 import discord
+from discord.ext import commands
+from datetime import datetime, timezone
+import re
 
 
 def setup_message_events(bot):
@@ -59,7 +62,7 @@ def setup_message_events(bot):
             f"🗑️ **Xóa hàng loạt tin nhắn**\n"
             f"**Kênh:** {channel.mention}\n"
             f"**Số lượng:** {count} tin nhắn\n"
-            f"**Thời gian:** {discord.utils.utcnow().strftime('%d/%m/%Y %H:%M:%S')}"
+            f"**Thời gian:** {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M:%S')}"
         )
         
         await bot.logger.log(log_msg)

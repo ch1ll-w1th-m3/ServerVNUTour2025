@@ -1,7 +1,10 @@
 """
-Bot logging functionality
+Bot logging system
 """
 import discord
+from discord.ext import commands
+from datetime import datetime, timezone
+import traceback
 
 
 class BotLogger:
@@ -43,7 +46,7 @@ class BotLogger:
         log_msg = (
             f"👋 **Thành viên rời:** {member.mention} (`{member.id}`)\n"
             f"**Tham gia lúc:** {member.joined_at.strftime('%d/%m/%Y %H:%M:%S') if member.joined_at else 'Không xác định'}\n"
-            f"**Rời lúc:** {discord.utils.utcnow().strftime('%d/%m/%Y %H:%M:%S')}"
+            f"**Rời lúc:** {datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M:%S')}"
         )
         await self.log(log_msg)
     

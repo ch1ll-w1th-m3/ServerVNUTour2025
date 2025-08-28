@@ -1,0 +1,250 @@
+            name="🏓 **Độ trễ**",
+            value=f"{round(bot.latency * 1000)}ms",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="🐍 **Phiên bản**",
+            value=f"discord.py {discord.__version__}",
+            inline=True
+        )
+        
+        embed.set_footer(text="VnuTourBot v1.0")
+        await interaction.response.send_message(embed=embed)
+    
+    @bot.tree.command(name="clear", description="Xóa tin nhắn (chỉ admin)")
+    @app_commands.describe(amount="Số lượng tin nhắn cần xóa")
+    @app_commands.default_permissions(manage_messages=True)
+    async def clear_slash(interaction: discord.Interaction, amount: int):
+        """Xóa tin nhắn (chỉ admin)"""
+        try:
+            if amount < 1 or amount > 100:
+                await interaction.response.send_message("❌ Số lượng tin nhắn phải từ 1 đến 100")
+                return
+            
+            # Defer response since this might take a while
+            await interaction.response.defer(ephemeral=True)
+            
+            deleted = await interaction.channel.purge(limit=amount)
+            await interaction.followup.send(f"🗑️ **Đã xóa {len(deleted)} tin nhắn**", ephemeral=True)
+            
+        except discord.Forbidden:
+            await interaction.followup.send("❌ Bot không có quyền xóa tin nhắn", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ **Lỗi:** {str(e)}", ephemeral=True)
+    
+    # Assign Discord ID to participant by MSSV
+    @bot.tree.command(name="assign", description="Liên kết Discord của bạn với MSSV")
+    @app_commands.describe(mssv="MSSV của bạn (trong Google Sheet)")
+    async def assign_slash(interaction: discord.Interaction, mssv: str):
+        try:
+            mongo = getattr(bot, "mongo", None)
+            if not mongo:
+                await interaction.response.send_message("Hệ thống cơ sở dữ liệu chưa được cấu hình.", ephemeral=True)
+                return
+            status, message = mongo.assign_discord_by_mssv(mssv, interaction.user.id)
+            await interaction.response.send_message(message, ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Lỗi: {e}", ephemeral=True)
+
+    # Help Command
+    @bot.tree.command(name="help", description="Hiển thị hướng dẫn sử dụng bot")
+    async def help_slash(interaction: discord.Interaction):
+        """Hiển thị hướng dẫn sử dụng bot"""
+        embed = discord.Embed(
+            title="🤖 **VnuTourBot - Hướng dẫn sử dụng**",
+            description="Bot quản lý tour VNU với các chức năng âm nhạc và quản lý trạm",
+            color=0x00ff00
+        )
+        
+        # Music commands
+        embed.add_field(
+            name="🎵 **Lệnh âm nhạc**",
+            value=(
+                "`/play <tên/URL>` - Phát nhạc\n"
+                "`/skip` - Bỏ qua bài hát hiện tại\n"
+                "`/queue` - Hiển thị queue nhạc\n"
+                "`/stop` - Dừng phát nhạc\n"
+                "`/volume <0-200>` - Điều chỉnh âm lượng"
+            ),
+            inline=False
+        )
+        
+        # Admin commands
+        embed.add_field(
+            name="🔧 **Lệnh admin**",
+            value=(
+                "`/ping` - Kiểm tra độ trễ\n"
+                "`/info` - Thông tin bot\n"
+                "`/clear <số>` - Xóa tin nhắn"
+            ),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="💡 **Ghi chú**",
+            value="Sử dụng `/` để xem tất cả các lệnh có sẵn",
+            inline=False
+        )
+        
+        embed.set_footer(text="VnuTourBot v1.0 - Slash Commands")
+        await interaction.response.send_message(embed=embed)
+
+
+# Helper functions (copied from music_commands.py)
+async def apply_volume_from_current_position(vc: discord.VoiceClient, player, volume: float):
+    """Apply volume immediately from current playback position"""
+    try:
+        # Get current track info
+        track = player.now_playing
+        if not track:
+            return
+        
+        # Calculate current playback position
+        current_time = 0
+        if player.started_at:
+            current_time = discord.utils.utcnow().timestamp() - player.started_at
+        
+        # Ensure current_time is not negative
+        current_time = max(0, current_time)
+        
+        # Build FFmpeg options with seek to current position
+        ffmpeg_opts = build_ffmpeg_options(track)
+        
+        # Add seek option to start from current position
+        seek_option = f"-ss {current_time}"
+        
+        # Create new audio source with seek and volume
+        source = discord.FFmpegPCMAudio(
+            track.stream_url,
+            before_options=f"{ffmpeg_opts} {seek_option}",
+            options=f"-vn -af volume={volume}"
+        )
+        
+        # Store new source
+        player.current_source = source
+        
+        # Update start time to current position
+        player.started_at = discord.utils.utcnow().timestamp() - current_time
+        
+        # Stop current playback first
+        vc.stop()
+        
+        # Give more time for clean stop and cleanup
+        await asyncio.sleep(0.1)
+        
+        # Cleanup old source if exists
+        force_cleanup_ffmpeg_source(player.current_source)
+        
+        # Play with new volume from current position
+        vc.play(source, after=lambda err: threading.Thread(target=lambda: asyncio.run(after_play_callback(err, player))).start())
+        
+    except Exception as e:
+        print(f"[VOLUME POSITION ERROR] {e}")
+
+
+async def play_next(guild, vc, player):
+    """Play the next track in queue"""
+    try:
+        # Get next track
+        track = player.get_next_track()
+        if not track:
+            return
+        
+        # Set as now playing
+        player.now_playing = track
+        player.started_at = discord.utils.utcnow().timestamp()
+        
+        # Build FFmpeg options
+        ffmpeg_opts = build_ffmpeg_options(track)
+        
+        # Create audio source with current volume
+        source = VolumeControlledAudioSource(
+            track.stream_url,
+            volume=player.volume,
+            before_options=ffmpeg_opts,
+            options="-vn"  # No volume filter needed, handled by our class
+        )
+        
+        # Store source for cleanup
+        player.current_source = source
+        
+        # Play audio with safe callback
+        vc.play(source, after=lambda err: threading.Thread(target=lambda: asyncio.run(after_play_callback(err, player))).start())
+        
+        # Send now playing message with beautiful embed
+        channel = guild.get_channel(player.text_channel_id)
+        if channel:
+            now_playing_embed = create_now_playing_embed(track)
+            player.now_playing_msg = await channel.send(embed=now_playing_embed)
+        
+        # Create background task to handle track completion
+        async def handle_track_completion():
+            # Wait for completion
+            await player.finished.wait()
+            player.finished.clear()
+            
+            # When track finishes, update message to simple text
+            if player.now_playing_msg:
+                try:
+                    await player.now_playing_msg.edit(content=f"✅ **Đã phát xong:** {track.title}", embed=None)
+                except:
+                    pass
+            
+            # Play next track if available
+            if player.queue:
+                await play_next(guild, vc, player)
+            else:
+                player.now_playing = None
+                player.started_at = None
+                player.now_playing_msg = None
+        
+        # Start background task (non-blocking)
+        asyncio.create_task(handle_track_completion())
+            
+    except Exception as e:
+        print(f"[PLAY NEXT ERROR] {e}")
+        # Try to play next track
+        if player.queue:
+            await play_next(guild, vc, player)
+
+
+def create_now_playing_embed(track):
+    """Create a beautiful now playing embed"""
+    embed = discord.Embed(
+        title="🎵 **Đang phát**",
+        description=f"**{track.title}**",
+        color=0x00ff00
+    )
+    
+    # Add artist info if available
+    if hasattr(track, 'artist') and track.artist:
+        embed.add_field(
+            name="👤 **Nghệ sĩ**",
+            value=track.artist,
+            inline=True
+        )
+    
+    # Add duration
+    if hasattr(track, 'duration') and track.duration:
+        duration_str = track.get_duration_str()
+        embed.add_field(
+            name="⏱️ **Thời lượng**",
+            value=duration_str,
+            inline=True
+        )
+    
+    # Add uploader if available
+    if hasattr(track, 'uploader') and track.uploader:
+        embed.add_field(
+            name="📺 **Kênh**",
+            value=track.uploader,
+            inline=True
+        )
+    
+    # Add thumbnail if available
+    if hasattr(track, 'thumbnail') and track.thumbnail:
+        embed.set_thumbnail(url=track.thumbnail)
+    
+    embed.set_footer(text="🎶 VnuTourBot Music Player")
+    return embed

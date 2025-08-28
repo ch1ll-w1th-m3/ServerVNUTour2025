@@ -21,13 +21,14 @@ class BotConfig:
         # Channel IDs
         self.welcome_channel_id = self._safe_int(os.getenv("WELCOME_CHANNEL_ID"))
         self.log_channel_id = self._safe_int(os.getenv("LOG_CHANNEL_ID"))
+        self.support_channel_id = self._safe_int(os.getenv("SUPPORT_ROLE"))
         
         # FFmpeg configuration
         self.ffmpeg_exe = os.getenv("FFMPEG_EXE") or "ffmpeg"
         
         # Bot prefix
         self.prefix = "!"
-        
+
         # Intents
         self.intents = {
             "message_content": True,
@@ -35,6 +36,22 @@ class BotConfig:
             "guilds": True,
             "voice_states": True
         }
+
+        # MongoDB configuration (optional but recommended)
+        # MongoDB connection string is stored under key `MongoDB` in .env
+        self.mongodb_uri = os.getenv("MongoDB")
+        self.mongodb_db = os.getenv("MONGODB_DB_NAME", "vnutour")
+
+        # Google Sheets sync configuration
+        self.google_sheet_api_key = os.getenv("GoogleSheetAPI")
+        self.google_sheet_id = os.getenv("GoogleSheetID")
+        self.google_sheet_range = os.getenv("GOOGLE_SHEET_RANGE", "A1:K")
+        # sync interval: default 60s, minimum 30s
+        try:
+            interval = int(os.getenv("SHEET_SYNC_INTERVAL", "60"))
+        except ValueError:
+            interval = 60
+        self.sheet_sync_interval = max(30, interval)
     
     def _safe_int(self, value: str) -> int:
         """Safely convert string to int"""
