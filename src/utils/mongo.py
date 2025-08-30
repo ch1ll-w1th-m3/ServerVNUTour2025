@@ -82,6 +82,36 @@ class MongoManager:
         if hasattr(self, 'client'):
             self.client.close()
 
+    def get_teams_with_members(self) -> list[Dict[str, Any]]:
+        """Get all teams that have at least one member with assigned Discord ID"""
+        try:
+            # Get teams that have members with discord_id
+            teams_with_members = []
+            
+            # Get all teams
+            all_teams = list(self.teams.find({}))
+            
+            for team in all_teams:
+                team_id = team.get("team_id")
+                if not team_id:
+                    continue
+                
+                # Find participants in this team who have discord_id assigned
+                members_with_discord = list(self.participants.find({
+                    "team_id": team_id,
+                    "discord_id": {"$exists": True, "$ne": None}
+                }))
+                
+                if members_with_discord:  # At least 1 member with Discord ID
+                    team["members_with_discord"] = members_with_discord
+                    teams_with_members.append(team)
+            
+            return teams_with_members
+            
+        except Exception as e:
+            print(f"[DB ERROR] Lỗi khi lấy teams có thành viên: {e}")
+            return []
+
     # ----- Indexes -----
     def _ensure_indexes(self):
         self.participants.create_index("mssv", unique=True)

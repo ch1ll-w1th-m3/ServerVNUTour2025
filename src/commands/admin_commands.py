@@ -483,3 +483,439 @@ def setup_admin_commands(bot):
     async def unban_error(ctx, error):
         if isinstance(error, commands.MissingPermissions):
             await ctx.send("Bạn không có quyền sử dụng lệnh này!")
+
+    @bot.command(name="addallrole")
+    @commands.has_permissions(administrator=True)
+    async def addallrole(ctx):
+        """Tự động tạo role và channel cho tất cả các đội có thành viên"""
+        try:
+            # Check if category ID is configured
+            if not bot.config.team_category_id:
+                await ctx.send("❌ **Lỗi:** Chưa cấu hình `CATEGORYIDFORTEAM` trong file .env")
+                return
+
+            # Get category
+            category = bot.get_channel(bot.config.team_category_id)
+            if not category:
+                await ctx.send(f"❌ **Lỗi:** Không tìm thấy category với ID {bot.config.team_category_id}")
+                return
+
+            # Get MongoDB instance
+            mongo = getattr(bot, "mongo", None)
+            if not mongo:
+                await ctx.send("❌ **Lỗi:** Hệ thống cơ sở dữ liệu chưa được cấu hình.")
+                return
+
+            # Send initial message
+            status_embed = discord.Embed(
+                title="🔄 **Đang tạo role và channel cho các đội...**",
+                description="Vui lòng chờ trong khi bot xử lý...",
+                color=0xf39c12
+            )
+            status_msg = await ctx.send(embed=status_embed)
+
+            # Get teams with members
+            teams_with_members = mongo.get_teams_with_members()
+            
+            if not teams_with_members:
+                await status_msg.edit(embed=discord.Embed(
+                    title="❌ **Không có đội nào để xử lý**",
+                    description="Không tìm thấy đội nào có thành viên đã assign Discord ID.",
+                    color=0xe74c3c
+                ))
+                return
+
+            # Process each team
+            created_roles = 0
+            created_channels = 0
+            assigned_members = 0
+            errors = []
+
+            for team in teams_with_members:
+                try:
+                    team_id = team.get("team_id")
+                    team_name = team.get("team_name", f"Team {team_id}")
+                    members = team.get("members_with_discord", [])
+
+                    if not team_id or not team_name or not members:
+                        continue
+
+                    # Clean team name for Discord (remove special chars, limit length)
+                    clean_team_name = "".join(c for c in team_name if c.isalnum() or c in " -_").strip()
+                    if len(clean_team_name) > 32:
+                        clean_team_name = clean_team_name[:32]
+
+                    # Create role if not exists
+                    role = discord.utils.get(ctx.guild.roles, name=clean_team_name)
+                    if not role:
+                        try:
+                            role = await ctx.guild.create_role(
+                                name=clean_team_name,
+                                color=discord.Color.random(),
+                                reason=f"Auto-created for team {team_id}"
+                            )
+                            created_roles += 1
+                        except discord.Forbidden:
+                            errors.append(f"Không có quyền tạo role cho đội {team_name}")
+                            continue
+                        except Exception as e:
+                            errors.append(f"Lỗi tạo role cho đội {team_name}: {e}")
+                            continue
+
+                    # Create text channel if not exists
+                    text_channel_name = f"{clean_team_name.lower().replace(' ', '-')}"
+                    text_channel = discord.utils.get(category.text_channels, name=text_channel_name)
+                    if not text_channel:
+                        try:
+                            # Set up text channel permissions
+                            overwrites = {
+                                ctx.guild.default_role: discord.PermissionOverwrite(
+                                    read_messages=False, 
+                                    send_messages=False,
+                                    view_channel=False
+                                ),
+                                role: discord.PermissionOverwrite(
+                                    read_messages=True, 
+                                    send_messages=True, 
+                                    attach_files=True, 
+                                    embed_links=True,
+                                    view_channel=True,
+                                    add_reactions=True,
+                                    read_message_history=True
+                                )
+                            }
+                            
+                            text_channel = await category.create_text_channel(
+                                name=text_channel_name,
+                                topic=f"Kênh chat cho đội {team_name}",
+                                reason=f"Auto-created for team {team_id}",
+                                overwrites=overwrites
+                            )
+                            created_channels += 1
+                        except discord.Forbidden:
+                            errors.append(f"Không có quyền tạo text channel cho đội {team_name}")
+                        except Exception as e:
+                            errors.append(f"Lỗi tạo text channel cho đội {team_name}: {e}")
+
+                    # Create voice channel if not exists
+                    voice_channel_name = f"{clean_team_name.lower().replace(' ', '-')}"
+                    voice_channel = discord.utils.get(category.voice_channels, name=voice_channel_name)
+                    if not voice_channel:
+                        try:
+                            # Set up voice channel permissions
+                            overwrites = {
+                                ctx.guild.default_role: discord.PermissionOverwrite(
+                                    connect=False, 
+                                    view_channel=False,
+                                    speak=False,
+                                    stream=False
+                                ),
+                                role: discord.PermissionOverwrite(
+                                    connect=True, 
+                                    view_channel=True, 
+                                    speak=True, 
+                                    stream=True,
+                                    priority_speaker=False,
+                                    mute_members=False,
+                                    deafen_members=False,
+                                    move_members=False
+                                )
+                            }
+                            
+                            voice_channel = await category.create_voice_channel(
+                                name=voice_channel_name,
+                                reason=f"Auto-created for team {team_id}",
+                                overwrites=overwrites,
+                                user_limit=10  # Limit to 10 users per team
+                            )
+                            created_channels += 1
+                        except discord.Forbidden:
+                            errors.append(f"Không có quyền tạo voice channel cho đội {team_name}")
+                        except Exception as e:
+                            errors.append(f"Lỗi tạo voice channel cho đội {team_name}: {e}")
+
+                    # Assign role to team members
+                    for member_data in members:
+                        discord_id = member_data.get("discord_id")
+                        if not discord_id:
+                            continue
+
+                        member = ctx.guild.get_member(discord_id)
+                        if member and role not in member.roles:
+                            try:
+                                await member.add_roles(role, reason=f"Auto-assigned for team {team_id}")
+                                assigned_members += 1
+                            except discord.Forbidden:
+                                errors.append(f"Không có quyền assign role cho {member.display_name}")
+                            except Exception as e:
+                                errors.append(f"Lỗi assign role cho {member.display_name}: {e}")
+
+                except Exception as e:
+                    errors.append(f"Lỗi xử lý đội {team.get('team_name', 'Unknown')}: {e}")
+
+            # Create final report
+            final_embed = discord.Embed(
+                title="✅ **Hoàn thành tạo role và channel**",
+                color=0x2ecc71
+            )
+            final_embed.add_field(
+                name="📊 **Thống kê**",
+                value=f"**Đội được xử lý:** {len(teams_with_members)}\n"
+                      f"**Role đã tạo:** {created_roles}\n"
+                      f"**Channel đã tạo:** {created_channels}\n"
+                      f"**Thành viên được assign role:** {assigned_members}",
+                inline=False
+            )
+
+            if errors:
+                error_text = "\n".join(errors[:10])  # Limit to first 10 errors
+                if len(errors) > 10:
+                    error_text += f"\n... và {len(errors) - 10} lỗi khác"
+                
+                final_embed.add_field(
+                    name="⚠️ **Lỗi gặp phải**",
+                    value=f"```{error_text}```",
+                    inline=False
+                )
+
+            final_embed.add_field(
+                name="👨‍💼 **Admin thực hiện**",
+                value=ctx.author.mention,
+                inline=True
+            )
+            final_embed.add_field(
+                name="🕒 **Thời gian**",
+                value=datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S"),
+                inline=True
+            )
+
+            await status_msg.edit(embed=final_embed)
+
+        except Exception as e:
+            await ctx.send(f"❌ **Lỗi:** {e}")
+
+    @addallrole.error
+    async def addallrole_error(ctx, error):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ **Lỗi:** Bạn không có quyền sử dụng lệnh này! Chỉ admin mới được phép.")
+        else:
+            await ctx.send(f"❌ **Lỗi:** {error}")
+
+    @bot.command(name="checkteamconfig")
+    @commands.has_permissions(administrator=True)
+    async def checkteamconfig(ctx):
+        """Kiểm tra cấu hình cho lệnh addallrole"""
+        try:
+            embed = discord.Embed(
+                title="🔧 **Kiểm tra cấu hình Team Setup**",
+                color=0x3498db
+            )
+            
+            # Check category configuration
+            if bot.config.team_category_id:
+                category = bot.get_channel(bot.config.team_category_id)
+                if category:
+                    embed.add_field(
+                        name="✅ **Category**",
+                        value=f"**ID:** {bot.config.team_category_id}\n**Tên:** {category.name}\n**Loại:** {category.type}",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="❌ **Category**",
+                        value=f"**ID:** {bot.config.team_category_id}\n**Trạng thái:** Không tìm thấy category",
+                        inline=False
+                    )
+            else:
+                embed.add_field(
+                    name="❌ **Category**",
+                    value="**Trạng thái:** Chưa cấu hình `CATEGORYIDFORTEAM` trong .env",
+                    inline=False
+                )
+            
+            # Check MongoDB
+            mongo = getattr(bot, "mongo", None)
+            if mongo:
+                try:
+                    teams_with_members = mongo.get_teams_with_members()
+                    embed.add_field(
+                        name="✅ **MongoDB**",
+                        value=f"**Trạng thái:** Kết nối thành công\n**Đội có thành viên:** {len(teams_with_members)}",
+                        inline=False
+                    )
+                    
+                    if teams_with_members:
+                        team_list = []
+                        for team in teams_with_members[:5]:  # Show first 5 teams
+                            team_name = team.get("team_name", "Unknown")
+                            member_count = len(team.get("members_with_discord", []))
+                            team_list.append(f"• {team_name}: {member_count} thành viên")
+                        
+                        if len(teams_with_members) > 5:
+                            team_list.append(f"... và {len(teams_with_members) - 5} đội khác")
+                        
+                        embed.add_field(
+                            name="📋 **Danh sách đội**",
+                            value="\n".join(team_list),
+                            inline=False
+                        )
+                except Exception as e:
+                    embed.add_field(
+                        name="❌ **MongoDB**",
+                        value=f"**Trạng thái:** Lỗi kết nối\n**Chi tiết:** {e}",
+                        inline=False
+                    )
+            else:
+                embed.add_field(
+                    name="❌ **MongoDB**",
+                    value="**Trạng thái:** Chưa khởi tạo MongoDB",
+                    inline=False
+                )
+            
+            # Check bot permissions
+            bot_member = ctx.guild.get_member(bot.user.id)
+            if bot_member:
+                required_permissions = [
+                    "manage_roles",
+                    "manage_channels",
+                    "view_channels",
+                    "send_messages"
+                ]
+                
+                missing_permissions = []
+                for perm in required_permissions:
+                    if not getattr(bot_member.guild_permissions, perm, False):
+                        missing_permissions.append(perm)
+                
+                if missing_permissions:
+                    embed.add_field(
+                        name="❌ **Quyền Bot**",
+                        value=f"**Thiếu quyền:** {', '.join(missing_permissions)}",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                        name="✅ **Quyền Bot**",
+                        value="**Trạng thái:** Đủ quyền để tạo role và channel",
+                        inline=False
+                    )
+            
+            embed.add_field(
+                name="💡 **Hướng dẫn**",
+                value="Sử dụng `!addallrole` để tạo role và channel cho tất cả đội có thành viên.",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            await ctx.send(f"❌ **Lỗi:** {e}")
+
+    @checkteamconfig.error
+    async def checkteamconfig_error(ctx, error):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ **Lỗi:** Bạn không có quyền sử dụng lệnh này! Chỉ admin mới được phép.")
+        else:
+            await ctx.send(f"❌ **Lỗi:** {error}")
+
+    @bot.command(name="checkteampermissions")
+    @commands.has_permissions(administrator=True)
+    async def checkteampermissions(ctx, team_name: str = None):
+        """Kiểm tra permissions của role và channel của team"""
+        try:
+            if not team_name:
+                await ctx.send("❌ **Lỗi:** Vui lòng nhập tên team! Ví dụ: `!checkteampermissions Team Alpha`")
+                return
+
+            # Clean team name
+            clean_team_name = "".join(c for c in team_name if c.isalnum() or c in " -_").strip()
+            if len(clean_team_name) > 32:
+                clean_team_name = clean_team_name[:32]
+
+            embed = discord.Embed(
+                title=f"🔍 **Kiểm tra Permissions - {clean_team_name}**",
+                color=0x3498db
+            )
+
+            # Check role
+            role = discord.utils.get(ctx.guild.roles, name=clean_team_name)
+            if role:
+                embed.add_field(
+                    name="✅ **Role**",
+                    value=f"**Tên:** {role.name}\n**ID:** {role.id}\n**Màu:** {role.color}\n**Thành viên:** {len(role.members)}",
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="❌ **Role**",
+                    value=f"Không tìm thấy role `{clean_team_name}`",
+                    inline=False
+                )
+
+            # Check text channel
+            text_channel_name = f"{clean_team_name.lower().replace(' ', '-')}"
+            text_channel = discord.utils.get(ctx.guild.text_channels, name=text_channel_name)
+            if text_channel:
+                embed.add_field(
+                    name="✅ **Text Channel**",
+                    value=f"**Tên:** {text_channel.name}\n**ID:** {text_channel.id}\n**Category:** {text_channel.category.name if text_channel.category else 'None'}",
+                    inline=False
+                )
+                
+                # Check permissions
+                if role:
+                    role_perms = text_channel.permissions_for(role)
+                    embed.add_field(
+                        name="📝 **Text Channel Permissions**",
+                        value=f"**Đọc tin nhắn:** {'✅' if role_perms.read_messages else '❌'}\n"
+                              f"**Gửi tin nhắn:** {'✅' if role_perms.send_messages else '❌'}\n"
+                              f"**Gửi file:** {'✅' if role_perms.attach_files else '❌'}\n"
+                              f"**Embed links:** {'✅' if role_perms.embed_links else '❌'}\n"
+                              f"**Reactions:** {'✅' if role_perms.add_reactions else '❌'}",
+                        inline=True
+                    )
+            else:
+                embed.add_field(
+                    name="❌ **Text Channel**",
+                    value=f"Không tìm thấy text channel `{text_channel_name}`",
+                    inline=False
+                )
+
+            # Check voice channel
+            voice_channel = discord.utils.get(ctx.guild.voice_channels, name=text_channel_name)
+            if voice_channel:
+                embed.add_field(
+                    name="✅ **Voice Channel**",
+                    value=f"**Tên:** {voice_channel.name}\n**ID:** {voice_channel.id}\n**Category:** {voice_channel.category.name if voice_channel.category else 'None'}\n**User limit:** {voice_channel.user_limit}",
+                    inline=False
+                )
+                
+                # Check permissions
+                if role:
+                    role_perms = voice_channel.permissions_for(role)
+                    embed.add_field(
+                        name="🎤 **Voice Channel Permissions**",
+                        value=f"**Kết nối:** {'✅' if role_perms.connect else '❌'}\n"
+                              f"**Xem channel:** {'✅' if role_perms.view_channel else '❌'}\n"
+                              f"**Nói chuyện:** {'✅' if role_perms.speak else '❌'}\n"
+                              f"**Stream:** {'✅' if role_perms.stream else '❌'}",
+                        inline=True
+                    )
+            else:
+                embed.add_field(
+                    name="❌ **Voice Channel**",
+                    value=f"Không tìm thấy voice channel `{text_channel_name}`",
+                    inline=False
+                )
+
+            await ctx.send(embed=embed)
+
+        except Exception as e:
+            await ctx.send(f"❌ **Lỗi:** {e}")
+
+    @checkteampermissions.error
+    async def checkteampermissions_error(ctx, error):
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ **Lỗi:** Bạn không có quyền sử dụng lệnh này! Chỉ admin mới được phép.")
+        else:
+            await ctx.send(f"❌ **Lỗi:** {error}")

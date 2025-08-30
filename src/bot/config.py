@@ -22,6 +22,7 @@ class BotConfig:
         self.welcome_channel_id = self._safe_int(os.getenv("WELCOME_CHANNEL_ID"))
         self.log_channel_id = self._safe_int(os.getenv("LOG_CHANNEL_ID"))
         self.support_channel_id = self._safe_int(os.getenv("SUPPORT_ROLE"))
+        self.team_category_id = self._safe_int(os.getenv("CATEGORYIDFORTEAM"))
         
         # FFmpeg configuration
         self.ffmpeg_exe = os.getenv("FFMPEG_EXE") or "ffmpeg"

@@ -91,7 +91,10 @@ def setup_help_command(bot):
                 "`!info` hoặc `/info` - Thông tin bot\n"
                 "`!clear <số>` hoặc `/clear <số>` - Xóa tin nhắn\n"
                 "`!kick <@user> <lý do>` - Kick\n"
-                "`!ban <@user> <lý do>` - Ban"
+                "`!ban <@user> <lý do>` - Ban\n"
+                "`!addallrole` hoặc `/addallrole` - Tự động tạo role và channel cho tất cả đội có thành viên\n"
+                "`!checkteamconfig` - Kiểm tra cấu hình team setup\n"
+                "`!checkteampermissions <tên team>` - Kiểm tra permissions của role và channel"
             ),
             inline=False,
         )

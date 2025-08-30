@@ -771,3 +771,239 @@ def create_now_playing_embed(track):
     
     embed.set_footer(text="🎶 VnuTourBot Music Player")
     return embed
+
+    # Admin Commands Group
+    @bot.tree.command(name="addallrole", description="Tự động tạo role và channel cho tất cả các đội có thành viên")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def addallrole_slash(interaction: discord.Interaction):
+        """Tự động tạo role và channel cho tất cả các đội có thành viên"""
+        try:
+            # Check if category ID is configured
+            if not bot.config.team_category_id:
+                await interaction.response.send_message(
+                    "❌ **Lỗi:** Chưa cấu hình `CATEGORYIDFORTEAM` trong file .env",
+                    ephemeral=True
+                )
+                return
+
+            # Get category
+            category = bot.get_channel(bot.config.team_category_id)
+            if not category:
+                await interaction.response.send_message(
+                    f"❌ **Lỗi:** Không tìm thấy category với ID {bot.config.team_category_id}",
+                    ephemeral=True
+                )
+                return
+
+            # Get MongoDB instance
+            mongo = getattr(bot, "mongo", None)
+            if not mongo:
+                await interaction.response.send_message(
+                    "❌ **Lỗi:** Hệ thống cơ sở dữ liệu chưa được cấu hình.",
+                    ephemeral=True
+                )
+                return
+
+            # Send initial message
+            status_embed = discord.Embed(
+                title="🔄 **Đang tạo role và channel cho các đội...**",
+                description="Vui lòng chờ trong khi bot xử lý...",
+                color=0xf39c12
+            )
+            await interaction.response.send_message(embed=status_embed)
+
+            # Get teams with members
+            teams_with_members = mongo.get_teams_with_members()
+            
+            if not teams_with_members:
+                await interaction.edit_original_response(embed=discord.Embed(
+                    title="❌ **Không có đội nào để xử lý**",
+                    description="Không tìm thấy đội nào có thành viên đã assign Discord ID.",
+                    color=0xe74c3c
+                ))
+                return
+
+            # Process each team
+            created_roles = 0
+            created_channels = 0
+            assigned_members = 0
+            errors = []
+
+            for team in teams_with_members:
+                try:
+                    team_id = team.get("team_id")
+                    team_name = team.get("team_name", f"Team {team_id}")
+                    members = team.get("members_with_discord", [])
+
+                    if not team_id or not team_name or not members:
+                        continue
+
+                    # Clean team name for Discord (remove special chars, limit length)
+                    clean_team_name = "".join(c for c in team_name if c.isalnum() or c in " -_").strip()
+                    if len(clean_team_name) > 32:
+                        clean_team_name = clean_team_name[:32]
+
+                    # Create role if not exists
+                    role = discord.utils.get(interaction.guild.roles, name=clean_team_name)
+                    if not role:
+                        try:
+                            role = await interaction.guild.create_role(
+                                name=clean_team_name,
+                                color=discord.Color.random(),
+                                reason=f"Auto-created for team {team_id}"
+                            )
+                            created_roles += 1
+                        except discord.Forbidden:
+                            errors.append(f"Không có quyền tạo role cho đội {team_name}")
+                            continue
+                        except Exception as e:
+                            errors.append(f"Lỗi tạo role cho đội {team_name}: {e}")
+                            continue
+
+                    # Create text channel if not exists
+                    text_channel_name = f"{clean_team_name.lower().replace(' ', '-')}"
+                    text_channel = discord.utils.get(category.text_channels, name=text_channel_name)
+                    if not text_channel:
+                        try:
+                            # Set up text channel permissions
+                            overwrites = {
+                                interaction.guild.default_role: discord.PermissionOverwrite(
+                                    read_messages=False, 
+                                    send_messages=False,
+                                    view_channel=False
+                                ),
+                                role: discord.PermissionOverwrite(
+                                    read_messages=True, 
+                                    send_messages=True, 
+                                    attach_files=True, 
+                                    embed_links=True,
+                                    view_channel=True,
+                                    add_reactions=True,
+                                    read_message_history=True
+                                )
+                            }
+                            
+                            text_channel = await category.create_text_channel(
+                                name=text_channel_name,
+                                topic=f"Kênh chat cho đội {team_name}",
+                                reason=f"Auto-created for team {team_id}",
+                                overwrites=overwrites
+                            )
+                            created_channels += 1
+                        except discord.Forbidden:
+                            errors.append(f"Không có quyền tạo text channel cho đội {team_name}")
+                        except Exception as e:
+                            errors.append(f"Lỗi tạo text channel cho đội {team_name}: {e}")
+
+                    # Create voice channel if not exists
+                    voice_channel_name = f"{clean_team_name.lower().replace(' ', '-')}"
+                    voice_channel = discord.utils.get(category.voice_channels, name=voice_channel_name)
+                    if not voice_channel:
+                        try:
+                            # Set up voice channel permissions
+                            overwrites = {
+                                interaction.guild.default_role: discord.PermissionOverwrite(
+                                    connect=False, 
+                                    view_channel=False,
+                                    speak=False,
+                                    stream=False
+                                ),
+                                role: discord.PermissionOverwrite(
+                                    connect=True, 
+                                    view_channel=True, 
+                                    speak=True, 
+                                    stream=True,
+                                    priority_speaker=False,
+                                    mute_members=False,
+                                    deafen_members=False,
+                                    move_members=False
+                                )
+                            }
+                            
+                            voice_channel = await category.create_voice_channel(
+                                name=voice_channel_name,
+                                reason=f"Auto-created for team {team_id}",
+                                overwrites=overwrites,
+                                user_limit=10  # Limit to 10 users per team
+                            )
+                            created_channels += 1
+                        except discord.Forbidden:
+                            errors.append(f"Không có quyền tạo voice channel cho đội {team_name}")
+                        except Exception as e:
+                            errors.append(f"Lỗi tạo voice channel cho đội {team_name}: {e}")
+
+                    # Assign role to team members
+                    for member_data in members:
+                        discord_id = member_data.get("discord_id")
+                        if not discord_id:
+                            continue
+
+                        member = interaction.guild.get_member(discord_id)
+                        if member and role not in member.roles:
+                            try:
+                                await member.add_roles(role, reason=f"Auto-assigned for team {team_id}")
+                                assigned_members += 1
+                            except discord.Forbidden:
+                                errors.append(f"Không có quyền assign role cho {member.display_name}")
+                            except Exception as e:
+                                errors.append(f"Lỗi assign role cho {member.display_name}: {e}")
+
+                except Exception as e:
+                    errors.append(f"Lỗi xử lý đội {team.get('team_name', 'Unknown')}: {e}")
+
+            # Create final report
+            final_embed = discord.Embed(
+                title="✅ **Hoàn thành tạo role và channel**",
+                color=0x2ecc71
+            )
+            final_embed.add_field(
+                name="📊 **Thống kê**",
+                value=f"**Đội được xử lý:** {len(teams_with_members)}\n"
+                      f"**Role đã tạo:** {created_roles}\n"
+                      f"**Channel đã tạo:** {created_channels}\n"
+                      f"**Thành viên được assign role:** {assigned_members}",
+                inline=False
+            )
+
+            if errors:
+                error_text = "\n".join(errors[:10])  # Limit to first 10 errors
+                if len(errors) > 10:
+                    error_text += f"\n... và {len(errors) - 10} lỗi khác"
+                
+                final_embed.add_field(
+                    name="⚠️ **Lỗi gặp phải**",
+                    value=f"```{error_text}```",
+                    inline=False
+                )
+
+            final_embed.add_field(
+                name="👨‍💼 **Admin thực hiện**",
+                value=interaction.user.mention,
+                inline=True
+            )
+            final_embed.add_field(
+                name="🕒 **Thời gian**",
+                value=datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S"),
+                inline=True
+            )
+
+            await interaction.edit_original_response(embed=final_embed)
+
+        except Exception as e:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ **Lỗi:** {e}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ **Lỗi:** {e}", ephemeral=True)
+
+    @addallrole_slash.error
+    async def addallrole_slash_error(interaction: discord.Interaction, error):
+        if isinstance(error, app_commands.MissingPermissions):
+            await interaction.response.send_message(
+                "❌ **Lỗi:** Bạn không có quyền sử dụng lệnh này! Chỉ admin mới được phép.",
+                ephemeral=True
+            )
+        else:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ **Lỗi:** {error}", ephemeral=True)
+            else:
+                await interaction.followup.send(f"❌ **Lỗi:** {error}", ephemeral=True)
